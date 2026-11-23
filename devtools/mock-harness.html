@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HeadsUp Markets — mock glasses harness</title>
+    <style>
+      body { margin: 0; background: #111; color: #ddd;
+        font-family: ui-monospace, Menlo, monospace; padding: 16px; }
+      h1 { font-size: 16px; color: #8dff8a; margin: 0 0 12px; }
+      #glasses-frame { border: 2px solid #333; border-radius: 12px;
+        padding: 12px; display: inline-block; background: #000; }
+      #glasses-canvas { position: relative; width: 576px; height: 288px;
+        background: #000; overflow: hidden; }
+      #controls { margin-top: 12px; display: flex; gap: 8px; }
+      #controls button { background: #222; color: #8dff8a;
+        border: 1px solid #4c9a4f; border-radius: 6px; padding: 8px 14px;
+        font: inherit; cursor: pointer; }
+      #controls button:hover { background: #2f6b35; }
+      #mock-log { margin-top: 12px; width: 600px; height: 140px;
+        overflow-y: auto; background: #000; border: 1px solid #333;
+        padding: 8px; font-size: 12px; color: #888; }
+      .hint { margin-top: 8px; font-size: 12px; color: #888; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@evenrealities/even_hub_sdk": "./mock/even-mock.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <h1>HeadsUp Markets — mock G2 glasses (576x288)</h1>
+    <div id="glasses-frame"><div id="glasses-canvas"></div></div>
+    <div id="controls">
+      <button data-action="up">Up</button>
+      <button data-action="down">Down</button>
+      <button data-action="click">Click (tap)</button>
+      <button data-action="double_click">Double-click</button>
+    </div>
+    <div class="hint">Keyboard: ArrowUp / ArrowDown / Enter / D (double-tap).
+      The app under test is the real src/main.ts — only the bridge is mocked.</div>
+    <div id="mock-log"></div>
+    <script type="module" src="./src/main.js"></script>
+    <script>
+      document.querySelectorAll('#controls button').forEach((b) => {
+        b.addEventListener('click', () => {
+          window.__mockInput && window.__mockInput(b.dataset.action)
+        })
+      })
+      document.addEventListener('keydown', (e) => {
+        if (!window.__mockInput) return
+        if (e.key === 'ArrowUp') window.__mockInput('up')
+        else if (e.key === 'ArrowDown') window.__mockInput('down')
+        else if (e.key === 'Enter') window.__mockInput('click')
+        else if (e.key === 'd' || e.key === 'D') window.__mockInput('double_click')
+      })
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1 @@
+{"compilerOptions":{"moduleResolution":"node","noEmit":false,"outDir":"dist-dev","rootDir":".","types":[]},"exclude":["src/vite-env.d.ts"],"extends":"./tsconfig.json","include":["src","mock"]}
