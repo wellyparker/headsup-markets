@@ -5,9 +5,19 @@
 // upstream rate-limit handling server-side, and is where the Telegram
 // digest (day 3) will live.
 //
-//   GET /snapshot -> { prices: PriceTick[], markets: Market[],
-//                      fetchedAt: string, stale: boolean }
-//   GET /health   -> { ok: true, uptimeSec, cacheAgeMs, lastGoodAt }
+//   GET /snapshot       -> { prices: PriceTick[], markets: Market[],
+//                            fetchedAt: string, stale: boolean }
+//   GET /health         -> { ok: true, uptimeSec, cacheAgeMs, lastGoodAt,
+//                            betsRecorded: number }
+//   POST /paper-bet     -> 201 { bet } — virtual ledger (day 3). The
+//                            glasses app POSTs every confirmed paper bet
+//                            here; the ledger feeds the Telegram digest.
+//   GET /paper-bets     -> { bets: Bet[] } (most recent first)
+//   GET /digest/preview -> { text } — the digest text, no token needed
+//   POST /digest/send   -> { sent: bool, reason? } — delivers via
+//                            Telegram when TELEGRAM_BOT_TOKEN +
+//                            TELEGRAM_CHAT_ID are set; otherwise no-ops
+//                            (logs "digest skipped: no token").
 //
 // Upstreams (both public, no API key):
 //   - CoinGecko /simple/price (BTC, ETH, SOL, XAUT + 24h change)
@@ -20,17 +30,28 @@
 // of one failed upstream call). If there is no cached snapshot yet and
 // both upstreams fail, /snapshot returns 502.
 //
-// No secrets, no user data, no wallets: this server only aggregates
-// public read-only market data. Paper bets stay a client-side ledger
-// (POST /paper-bet arrives day 3 with the Telegram digest).
+// No secrets, no wallets: this server only aggregates public read-only
+// market data plus a VIRTUAL paper-bet ledger (no real money, no real
+// exchanges). The ledger is persisted to server/data/ledger.json, which
+// is gitignored — it holds user activity, never credentials. The
+// Telegram digest reads its token from the environment only (see
+// digest.mjs); nothing secret is ever committed or logged.
 import { createServer } from 'node:http'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { formatDigest, sendDigest } from './digest.mjs'
 
 const PORT = Number(process.env.PORT ?? 3000)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const CACHE_TTL_MS = 60_000
-// Generous: the VM egress proxy regime runs 2–17 s per upstream call.
-// The 60 s cache means a slow cold build is paid once, then served in ms.
-const UPSTREAM_TIMEOUT_MS = 30_000
+// Generous: the VM egress proxy regime runs 2–17 s per upstream call
+// on a good day, but Gamma measured 35 s on 24 Nov (day 3) and
+// CoinGecko failed once transiently at 45 s. 60 s keeps a slow cold
+// build from failing outright; the 60 s cache means it is paid once,
+// then served in ms. The glasses app falls back to offline data if a
+// single fetch is slower than its own 30 s timeout.
+const UPSTREAM_TIMEOUT_MS = 60_000
 const MARKET_COUNT = 5
 
 const COINGECKO_URL =
@@ -58,6 +79,90 @@ const COINS = [
 /** @type {{ payload: object, at: number } | null} */
 let cache = null
 const startedAt = Date.now()
+
+// ---------------------------------------------------------------------------
+// Paper-bet ledger (day 3): in-memory + JSON persistence.
+// ---------------------------------------------------------------------------
+const DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), 'data')
+const LEDGER_PATH = join(DATA_DIR, 'ledger.json')
+const MAX_BETS = 1000 // cap: oldest bets drop off so the file stays small
+const MAX_BODY_BYTES = 16 * 1024
+
+/** @type {Array<object>} */
+let bets = []
+try {
+  const raw = readFileSync(LEDGER_PATH, 'utf8')
+  const parsed = JSON.parse(raw)
+  if (Array.isArray(parsed?.bets)) bets = parsed.bets
+  console.log(`[headsup-backend] ledger loaded: ${bets.length} bets`)
+} catch {
+  // Missing or corrupt ledger — start empty (a corrupt file is
+  // overwritten on the next successful save).
+}
+
+function saveLedger() {
+  try {
+    mkdirSync(DATA_DIR, { recursive: true })
+    // Atomic write: temp file + rename, so a crash never leaves a
+    // half-written ledger.
+    const tmp = LEDGER_PATH + '.tmp'
+    writeFileSync(tmp, JSON.stringify({ bets }, null, 2))
+    renameSync(tmp, LEDGER_PATH)
+  } catch (err) {
+    console.error('[headsup-backend] ledger save failed:', err.message)
+  }
+}
+
+function newBetId() {
+  return `bet_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** Validate a POST /paper-bet body. Returns an error string or null. */
+function validateBet(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'body must be a JSON object'
+  }
+  if (typeof body.marketId !== 'string' || !body.marketId.trim() || body.marketId.length > 64) {
+    return 'marketId must be a non-empty string (max 64 chars)'
+  }
+  if (typeof body.question !== 'string' || !body.question.trim() || body.question.length > 500) {
+    return 'question must be a non-empty string (max 500 chars)'
+  }
+  if (body.side !== 'YES' && body.side !== 'NO') {
+    return "side must be 'YES' or 'NO'"
+  }
+  if (!Number.isFinite(body.amountUsd) || body.amountUsd <= 0 || body.amountUsd > 1_000_000) {
+    return 'amountUsd must be a number > 0 and <= 1000000'
+  }
+  if (!Number.isFinite(body.oddsPct) || body.oddsPct <= 0 || body.oddsPct > 100) {
+    return 'oddsPct must be a number > 0 and <= 100'
+  }
+  return null
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error('body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch {
+        reject(new Error('invalid JSON'))
+      }
+    })
+    req.on('error', reject)
+  })
+}
 
 function round2(n) {
   return Math.round(n * 100) / 100
@@ -191,7 +296,7 @@ function sendJson(res, status, obj) {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Cache-Control': 'no-store',
   })
@@ -202,7 +307,7 @@ const server = createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     })
     res.end()
@@ -217,7 +322,64 @@ const server = createServer(async (req, res) => {
       uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
       cacheAgeMs: cache ? Date.now() - cache.at : null,
       lastGoodAt: cache ? cache.payload.fetchedAt : null,
+      betsRecorded: bets.length,
     })
+    return
+  }
+
+  if (url.pathname === '/paper-bet' && req.method === 'POST') {
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (err) {
+      sendJson(res, 400, { error: err.message })
+      return
+    }
+    const invalid = validateBet(body)
+    if (invalid) {
+      sendJson(res, 400, { error: invalid })
+      return
+    }
+    const bet = {
+      id: newBetId(),
+      marketId: body.marketId.trim(),
+      question: body.question.trim(),
+      side: body.side,
+      amountUsd: body.amountUsd,
+      oddsPct: body.oddsPct,
+      placedAt: new Date().toISOString(),
+    }
+    bets.push(bet)
+    if (bets.length > MAX_BETS) bets = bets.slice(-MAX_BETS)
+    saveLedger()
+    // The bet is now a digest entry: the next digest (preview or send)
+    // includes it with its mark-to-market P&L.
+    console.log(`[headsup-backend] paper bet recorded: ${bet.id} $${bet.amountUsd} ${bet.side} @ ${bet.oddsPct}%`)
+    sendJson(res, 201, { bet })
+    return
+  }
+
+  if (url.pathname === '/paper-bets' && req.method === 'GET') {
+    sendJson(res, 200, { bets: [...bets].reverse() })
+    return
+  }
+
+  if (url.pathname === '/digest/preview' && req.method === 'GET') {
+    if (!cache) {
+      sendJson(res, 502, { error: 'no snapshot yet, try again in a few seconds' })
+      return
+    }
+    sendJson(res, 200, { text: formatDigest(cache.payload, bets) })
+    return
+  }
+
+  if (url.pathname === '/digest/send' && req.method === 'POST') {
+    if (!cache) {
+      sendJson(res, 502, { error: 'no snapshot yet, try again in a few seconds' })
+      return
+    }
+    const result = await sendDigest({ snapshot: cache.payload, bets })
+    sendJson(res, 200, result)
     return
   }
 
@@ -246,7 +408,7 @@ const server = createServer(async (req, res) => {
 })
 
 server.listen(PORT, HOST, () => {
-  console.log(`[headsup-backend] listening on http://${HOST}:${PORT} (GET /snapshot, GET /health)`)
+  console.log(`[headsup-backend] listening on http://${HOST}:${PORT} (GET /snapshot, GET /health, POST /paper-bet, GET /digest/preview, POST /digest/send)`)
   // Warm the cache at startup so the first glasses fetch is served in ms.
   buildSnapshot()
     .then((payload) => {

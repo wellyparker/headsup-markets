@@ -6,7 +6,9 @@
  *   detail  — one market: odds bar, volume, paper-bet sizes (list)
  *   confirm — paper-bet confirmation (list: Confirm / Cancel)
  *   done    — result text ("Paper bet placed"), tap to go home
- *   alerts  — price alerts list (mock day 1, real wiring day 3)
+ *   alerts  — price alerts list (day 3: wired to live snapshot prices
+ *             via checkAlerts(); firing is in-app only, Telegram
+ *             delivery arrives with the digest token)
  *
  * Navigation rules (Even Hub QA):
  * - Double-tap = back. On the root page it opens the system
@@ -36,6 +38,14 @@ export interface PriceAlert {
   direction: 'above' | 'below'
   targetUsd: number
   enabled: boolean
+  /**
+   * True while the live price sits inside the trigger zone. Managed by
+   * checkAlerts(): set on firing, cleared when the price leaves the zone
+   * (re-arming the alert). Day 3 — wired to live snapshot data.
+   */
+  triggered?: boolean
+  /** ISO timestamp of the most recent firing. */
+  firedAt?: string
 }
 
 export const BET_SIZES = [100, 500, 1000]
@@ -65,6 +75,45 @@ export class AppState {
 
   priceOf(symbol: string): PriceTick | undefined {
     return this.prices.find((p) => p.symbol === symbol)
+  }
+
+  /** Alerts currently sitting inside their trigger zone (live data). */
+  get triggeredAlerts(): PriceAlert[] {
+    return this.alerts.filter((a) => a.enabled && a.triggered)
+  }
+
+  /**
+   * Evaluate enabled alerts against the current snapshot (day 3 — live
+   * data wiring). Returns the alerts that fired on THIS call: an alert
+   * fires once per crossing into its trigger zone and re-arms only after
+   * the price leaves the zone, so a 60 s refresh loop never re-fires the
+   * same alert every minute. Call after every snapshot refresh (main.ts
+   * does this in refresh()). Firing is in-app only for now: the home
+   * header shows !ALERT and the alerts screen marks the alert
+   * TRIGGERED; Telegram delivery arrives with the digest token.
+   */
+  checkAlerts(): PriceAlert[] {
+    const fired: PriceAlert[] = []
+    for (const alert of this.alerts) {
+      if (!alert.enabled) {
+        alert.triggered = false
+        continue
+      }
+      const tick = this.priceOf(alert.symbol)
+      if (!tick) continue
+      const inZone =
+        alert.direction === 'above'
+          ? tick.usd >= alert.targetUsd
+          : tick.usd <= alert.targetUsd
+      if (inZone && !alert.triggered) {
+        alert.triggered = true
+        alert.firedAt = new Date().toISOString()
+        fired.push(alert)
+      } else if (!inZone) {
+        alert.triggered = false
+      }
+    }
+    return fired
   }
 
   placeBet(): PaperBet | null {

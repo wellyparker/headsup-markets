@@ -1,8 +1,9 @@
-# HeadsUp backend proxy (BUILT day 2)
+# HeadsUp backend proxy (BUILT day 2, WRITE + digest day 3)
 
-One small read-only proxy that the glasses app calls instead of hitting
-public APIs directly. Zero dependencies (plain `node:http` + global
-`fetch`), Node >= 20.17.
+One small proxy that the glasses app calls instead of hitting public
+APIs directly. Zero dependencies (plain `node:http` + global `fetch`),
+Node >= 20.17. Day 3 added the virtual paper-bet ledger and the
+Telegram digest plumbing.
 
 ## Run
 
@@ -27,15 +28,48 @@ already is in the dev shell). A deployed instance needs no proxy config.
   - 60 s in-memory cache, warmed at startup. On upstream failure the
     last good snapshot is served with `stale: true`; 502 only when
     there is no cached snapshot yet.
-- `GET /health` → `{ ok, uptimeSec, cacheAgeMs, lastGoodAt }`
+- `GET /health` → `{ ok, uptimeSec, cacheAgeMs, lastGoodAt, betsRecorded }`
+- `POST /paper-bet` → `201 { bet }` — records a paper bet in the
+  virtual ledger. Body: `{ marketId, question, side: 'YES'|'NO',
+  amountUsd, oddsPct }` (validated; 400 on bad input). The ledger is
+  kept in memory + persisted to `server/data/ledger.json` (gitignored
+  — user activity data, never committed). Oldest bets drop off past
+  1,000 entries.
+- `GET /paper-bets` → `{ bets: Bet[] }`, most recent first.
+- `GET /digest/preview` → `{ text }` — the daily digest text (prices,
+  watched markets, last-24h paper bets with mark-to-market P&L), no
+  token needed. 502 when no snapshot is cached yet.
+- `POST /digest/send` → `{ sent: bool, reason? }` — delivers the
+  digest via Telegram when `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
+  are set in the environment; otherwise no-ops (`{ sent: false,
+  reason: 'no-token' }`, log line "digest skipped: no token").
+
+## Telegram digest
+
+`digest.mjs` formats the digest and sends it via the Telegram Bot API.
+Setup (when a bot exists — not yet created):
+
+```bash
+export TELEGRAM_BOT_TOKEN=...   # from @BotFather, never commit it
+export TELEGRAM_CHAT_ID=...     # the chat/user to receive the digest
+npm start
+curl -X POST http://localhost:3000/digest/send
+```
+
+There is no automatic daily timer in the server: trigger a send with
+`POST /digest/send` from a scheduler (cron / the host's scheduler).
+The token is read from the environment only and never logged.
 
 ## Notes
 
 - CORS is wide open (`Access-Control-Allow-Origin: *`) — the glasses
   WebView fetches this from a different origin.
-- No API keys anywhere (both upstreams are public, no key) and no user
-  data: the proxy only aggregates public read-only market data.
-- `POST /paper-bet` + Telegram digest arrive day 3.
+- No API keys anywhere in the app (both upstreams are public, no key).
+  The only secret in the whole system is the Telegram bot token, which
+  lives in the environment only — never in the repo, never in logs.
+- Upstream timeout is 60 s (Gamma measured 35 s through the dev VM's
+  egress proxy on 24 Nov); the 60 s cache means a slow cold build is
+  paid once.
 
 ## Hosting (to decide before submission)
 

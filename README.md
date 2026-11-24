@@ -12,8 +12,16 @@ aiming for the Best Telegram Integration prize).
 - **READ** — live Polymarket odds for watched markets + CoinGecko prices
   (BTC/ETH/SOL/XAUT), glanceable on the 576×288 monochrome-green display.
 - **WRITE** — one-tap **paper bet** confirmation (virtual ledger, no real
-  money, no wallets, no exchange accounts) and price alerts.
-- **TELEGRAM** — daily market digest via bot (coming in the build week).
+  money, no wallets, no exchange accounts) and price alerts. Confirmed
+  bets are also recorded in the backend ledger (`POST /paper-bet`) so
+  they show up in the Telegram digest with mark-to-market P&L.
+- **TELEGRAM** — daily market digest via bot (day 3): prices, watched
+  markets, and paper-bet results. The digest sender reads
+  `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` from the environment and
+  no-ops gracefully without them; `GET /digest/preview` shows the
+  digest text without any token. Price alerts are wired to live data
+  in-app (home header shows `!ALERT`, alerts screen marks `!TRIG` and
+  shows the live price next to each target).
 - **VOICE (optional)** — ask about a market out loud on hardware; the app
   is fully usable tap/ring-first because audio does not work in the
   simulator.
@@ -86,7 +94,8 @@ src/
   types/              Ambient SDK fallback types (inert once the real SDK installs)
 mock/                 Mock EvenAppBridge for plain-browser dev (dev-only)
 devtools/             Mock harness + headless simulator test
-server/               Backend proxy: GET /snapshot (CoinGecko + Polymarket Gamma)
+server/               Backend proxy: GET /snapshot (CoinGecko + Polymarket Gamma),
+                      POST /paper-bet (virtual ledger), digest (digest.mjs)
 ```
 
 ## Controls (glasses / simulator)

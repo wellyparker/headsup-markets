@@ -128,6 +128,15 @@ async function refresh(): Promise<boolean> {
     }
   }
   state.dataVersion += 1
+  // Day 3: evaluate price alerts against the fresh snapshot. Firing is
+  // in-app only (home header shows !ALERT, alerts screen marks !TRIG);
+  // Telegram delivery arrives with the digest token.
+  const fired = state.checkAlerts()
+  for (const alert of fired) {
+    console.log(
+      `[headsup] alert fired: ${alert.symbol} ${alert.direction} ${alert.targetUsd}`,
+    )
+  }
   return true
 }
 
@@ -212,7 +221,18 @@ async function onListSelect(itemName: string | undefined): Promise<void> {
   if (state.screen === 'confirm') {
     if (name === CONFIRM_ITEM) {
       const bet = state.placeBet()
-      if (bet) await persistBets()
+      if (bet) {
+        await persistBets()
+        // Day 3: also record the bet in the backend ledger so it shows
+        // up in the Telegram digest. Best-effort and non-blocking: the
+        // bet is already saved locally, so a failed submit never stops
+        // the done screen.
+        void provider
+          .submitPaperBet?.(bet)
+          .catch((err) =>
+            console.warn('[headsup] paper-bet submit failed (local copy kept):', err),
+          )
+      }
       state.screen = 'done'
       return render()
     }

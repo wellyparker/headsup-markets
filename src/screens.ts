@@ -41,14 +41,24 @@ export function betListLabel(amount: number, side: 'YES' | 'NO'): string {
   return `$${amount.toLocaleString('en-US')} ${side}`
 }
 
-/** Alert list item, e.g. "BTC above $62,000 [ON]". */
+/**
+ * Alert list item, e.g. "BTC above $62,000 [ON] $61,082".
+ * Day 3: shows the live price next to the target, plus a !TRIG marker
+ * while the alert sits inside its trigger zone. Stays under the 64-char
+ * list-item limit.
+ */
 export function alertListLabel(
   symbol: string,
   direction: 'above' | 'below',
   targetUsd: number,
   enabled: boolean,
+  currentUsd?: number,
+  triggered?: boolean,
 ): string {
-  return `${symbol} ${direction} ${fmtPrice(targetUsd)} [${enabled ? 'ON' : 'OFF'}]`
+  const base = `${symbol} ${direction} ${fmtPrice(targetUsd)} [${enabled ? 'ON' : 'OFF'}]`
+  const live = currentUsd !== undefined ? ` ${fmtPrice(currentUsd)}` : ''
+  const trig = triggered ? ' !TRIG' : ''
+  return `${base}${live}${trig}`
 }
 
 function headerText(
@@ -149,7 +159,10 @@ export function homePage(state: AppState): PageContainerProps {
   ]
     .filter(Boolean)
     .join('  ')
-  const header = `HEADSUP MARKETS [${tag}]  ${time}\n${priceLine}`
+  // Day 3: a fired price alert is visible at a glance on the home
+  // header — the user should not have to open the alerts screen.
+  const alertTag = state.triggeredAlerts.length > 0 ? ' !ALERT' : ''
+  const header = `HEADSUP MARKETS [${tag}]${alertTag}  ${time}\n${priceLine}`
 
   const items = state.markets.map(marketListLabel)
   items.push(HOME_ALERTS_ITEM, HOME_REFRESH_ITEM)
@@ -226,9 +239,20 @@ export function donePage(state: AppState): PageContainerProps {
 }
 
 export function alertsPage(state: AppState): PageContainerProps {
-  const header = 'PRICE ALERTS\nTap an alert to toggle it on/off.'
+  const triggered = state.triggeredAlerts.length
+  const header =
+    triggered > 0
+      ? `PRICE ALERTS — ${triggered} TRIGGERED\nTap an alert to toggle it on/off.`
+      : 'PRICE ALERTS\nTap an alert to toggle it on/off.'
   const items = state.alerts.map((a) =>
-    alertListLabel(a.symbol, a.direction, a.targetUsd, a.enabled),
+    alertListLabel(
+      a.symbol,
+      a.direction,
+      a.targetUsd,
+      a.enabled,
+      state.priceOf(a.symbol)?.usd,
+      a.triggered,
+    ),
   )
   items.push(BACK_ITEM)
   return {

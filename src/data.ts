@@ -37,8 +37,29 @@ export interface Snapshot {
   live: boolean
 }
 
+/**
+ * Paper-bet payload sent to the backend ledger (POST /paper-bet, day 3).
+ * Structurally identical to state.ts PaperBet (minus the server-assigned
+ * id) — main.ts passes the placed bet straight through. Paper money
+ * only: no wallets, no real exchanges, no real orders.
+ */
+export interface PaperBetPayload {
+  marketId: string
+  question: string
+  side: 'YES' | 'NO'
+  amountUsd: number
+  oddsPct: number
+  placedAt: string
+}
+
 export interface DataProvider {
   fetchSnapshot(): Promise<Snapshot>
+  /**
+   * Record a confirmed paper bet in the backend ledger (day 3). Optional:
+   * MockProvider has no backend, so it is a no-op there. Callers must
+   * treat a failure as non-fatal — the bet is already saved locally.
+   */
+  submitPaperBet?(bet: PaperBetPayload): Promise<void>
 }
 
 export class MockProvider implements DataProvider {
@@ -81,5 +102,17 @@ export class BackendProvider implements DataProvider {
       markets: Market[]
     }
     return { ...json, fetchedAt: new Date(), live: true }
+  }
+
+  async submitPaperBet(bet: PaperBetPayload): Promise<void> {
+    const res = await fetch(`${this.baseUrl}/paper-bet`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(bet),
+      // Short timeout: the submit is best-effort (main.ts never blocks
+      // the done screen on it), so fail fast rather than hang the flow.
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) throw new Error(`backend ${res.status}`)
   }
 }

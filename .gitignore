@@ -7,3 +7,6 @@ dist-dev/
 .env
 .env.*
 !.env.example
+# Paper-bet ledger (server/data/ledger.json) — user activity data,
+# never committed. The file is created on first bet.
+server/data/
