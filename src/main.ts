@@ -23,7 +23,7 @@ import {
   type EvenHubEvent,
   type PageContainerProps,
 } from '@evenrealities/even_hub_sdk'
-import { MockProvider, type DataProvider } from './data.js'
+import { BackendProvider, MockProvider, type DataProvider } from './data.js'
 import {
   alertsPage,
   BACK_ITEM,
@@ -47,9 +47,19 @@ const REFRESH_INTERVAL_MS = 60_000
 const BETS_STORAGE_KEY = 'headsup.bets.v1'
 
 const state = new AppState()
-// Day 1: mock data (offline). Day 2: swap to BackendProvider once the
-// proxy is deployed — see data.ts.
-const provider: DataProvider = new MockProvider()
+// Day 2: live data via the backend proxy (server/index.mjs). The base URL
+// is baked in at build time from VITE_BACKEND_URL; localhost:3000 is the
+// local dev/simulator default. If the backend is unreachable the app
+// degrades to offline fixtures (home header shows [MOCK] instead of
+// [LIVE]) rather than going blank — see refresh().
+const provider: DataProvider = new BackendProvider(
+  // Optional chaining: the offline mock build (plain tsc, no Vite)
+  // leaves import.meta.env undefined — Vite replaces import.meta.env
+  // with the static env object at build time, so this is still a
+  // compile-time constant in the real bundle.
+  import.meta.env?.VITE_BACKEND_URL ?? 'http://localhost:3000',
+)
+const fallback: DataProvider = new MockProvider()
 
 let bridge: EvenAppBridge
 let started = false
@@ -105,12 +115,20 @@ async function showError(message: string): Promise<void> {
 async function refresh(): Promise<boolean> {
   try {
     state.snapshot = await provider.fetchSnapshot()
-    state.dataVersion += 1
-    return true
   } catch (err) {
-    console.error('[headsup] snapshot fetch failed:', err)
-    return false
+    // Offline degradation: fixtures keep the glasses usable when the
+    // backend (or the link to it) is down. The home header flips to
+    // [MOCK] so the user can see the data is not live.
+    console.warn('[headsup] live snapshot failed, using offline data:', err)
+    try {
+      state.snapshot = await fallback.fetchSnapshot()
+    } catch (err2) {
+      console.error('[headsup] snapshot fetch failed:', err2)
+      return false
+    }
   }
+  state.dataVersion += 1
+  return true
 }
 
 async function persistBets(): Promise<void> {

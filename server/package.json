@@ -1,0 +1,1 @@
+{"description":"HeadsUp Markets backend proxy: one GET /snapshot aggregating CoinGecko prices + Polymarket Gamma odds for the G2 glasses app. Zero dependencies.","engines":{"node":">=20.17"},"license":"MIT","name":"headsup-backend","private":true,"scripts":{"start":"node index.mjs"},"type":"module","version":"0.1.0"}

@@ -34,6 +34,18 @@ npm run dev            # Vite dev server on http://localhost:5173
 evenhub-simulator http://localhost:5173
 ```
 
+Backend proxy (the app reads live data through it; run it before the app
+if you want live data instead of the offline fallback):
+
+```bash
+cd server && npm start   # GET /snapshot on http://localhost:3000
+```
+
+The app's backend URL is baked in at build time from `VITE_BACKEND_URL`
+(default `http://localhost:3000`; see `.env.example`). Without a reachable
+backend the app degrades to offline fixtures — the home header shows
+`[MOCK]` instead of `[LIVE]`.
+
 Headless simulator test (needs the simulator's automation port):
 
 ```bash
@@ -66,14 +78,15 @@ src/
   main.ts             Boot, event routing, navigation
   screens.ts          Page renderers (home / detail / confirm / done / alerts)
   state.ts            App state + navigation model
-  data.ts             DataProvider interface (mock now, live backend day 2)
-  fixtures.ts         Mock market data for offline dev
+  data.ts             DataProvider interface (BackendProvider live, MockProvider fallback)
+  fixtures.ts         Offline fixture data (fallback when the backend is unreachable)
   format.ts           Canvas text formatting helpers
   voice.ts            Voice capture scaffolding (hardware-only)
+  env.d.ts            VITE_BACKEND_URL typing
   types/              Ambient SDK fallback types (inert once the real SDK installs)
 mock/                 Mock EvenAppBridge for plain-browser dev (dev-only)
 devtools/             Mock harness + headless simulator test
-server/               Backend proxy plan (day 2)
+server/               Backend proxy: GET /snapshot (CoinGecko + Polymarket Gamma)
 ```
 
 ## Controls (glasses / simulator)

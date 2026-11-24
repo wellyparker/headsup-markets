@@ -55,12 +55,14 @@ export class MockProvider implements DataProvider {
 }
 
 /**
- * Live provider (DAY 2 — not wired yet).
+ * Live provider (DAY 2 — wired in main.ts).
  *
- * Endpoint contract (backend proxy, to be deployed day 2):
- *   GET {base}/snapshot -> { prices: PriceTick[], markets: Market[] }
- * Until the backend exists this provider is unused; main.ts uses
- * MockProvider. Flip the switch in main.ts once the backend is live.
+ * Endpoint contract (backend proxy, server/index.mjs):
+ *   GET {base}/snapshot -> { prices: PriceTick[], markets: Market[],
+ *                            fetchedAt: string, stale: boolean }
+ * Extra fields from the backend (fetchedAt, stale) are ignored here;
+ * fetchedAt is stamped locally so the UI clock always reflects the
+ * moment the glasses got the data.
  */
 export class BackendProvider implements DataProvider {
   constructor(private baseUrl: string) {}
@@ -68,6 +70,10 @@ export class BackendProvider implements DataProvider {
   async fetchSnapshot(): Promise<Snapshot> {
     const res = await fetch(`${this.baseUrl}/snapshot`, {
       headers: { Accept: 'application/json' },
+      // The backend serves a warm cache in ms; 30 s only guards a cold
+      // build over a slow link. main.ts falls back to MockProvider on
+      // any failure, so a timeout degrades to offline data, not a blank.
+      signal: AbortSignal.timeout(30_000),
     })
     if (!res.ok) throw new Error(`backend ${res.status}`)
     const json = (await res.json()) as {
