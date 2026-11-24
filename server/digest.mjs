@@ -10,7 +10,11 @@
 // No token is ever committed or logged: the token lives only in the
 // process environment (see server/README.md).
 
-const TELEGRAM_TIMEOUT_MS = 15_000
+// 60s, not 15s: measured 24 Nov 2026 — api.telegram.org takes ~24.5s
+// for a plain GET through the VM egress proxy (slow/flapping regime);
+// the 15s timeout aborted every send. Same regime as the 60s upstream
+// snapshot timeout.
+const TELEGRAM_TIMEOUT_MS = 60_000
 // Telegram caps a message at 4096 chars; stay comfortably under it.
 const MAX_DIGEST_CHARS = 3500
 
