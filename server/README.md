@@ -56,9 +56,19 @@ npm start
 curl -X POST http://localhost:3000/digest/send
 ```
 
-There is no automatic daily timer in the server: trigger a send with
-`POST /digest/send` from a scheduler (cron / the host's scheduler).
-The token is read from the environment only and never logged.
+There is an automatic daily timer in the server (day 4): every day at
+`DIGEST_TIME_WIB` (default `08:00` WIB) it refreshes the snapshot and
+sends the digest. If the upstreams are down at that moment it logs
+"daily digest skipped" and tries again the next day — `POST
+/digest/send` stays available as a manual retry. The next run is
+visible in `GET /health` (`digest.nextDigestAt`).
+
+The server also long-polls Telegram `getUpdates` (day 4) and replies
+to `/start` with a short welcome message — the bot stayed silent on
+`/start` on 24 + 27 Nov. The poll offset is persisted to
+`server/data/telegram-offset.json` (gitignored) so a restart never
+re-replies to an old `/start`. Polling runs only when
+`TELEGRAM_BOT_TOKEN` is set.
 
 ## Notes
 

@@ -15,11 +15,14 @@ aiming for the Best Telegram Integration prize).
   money, no wallets, no exchange accounts) and price alerts. Confirmed
   bets are also recorded in the backend ledger (`POST /paper-bet`) so
   they show up in the Telegram digest with mark-to-market P&L.
-- **TELEGRAM** — daily market digest via bot (day 3): prices, watched
-  markets, and paper-bet results. The digest sender reads
+- **TELEGRAM** — daily market digest via bot (day 3, auto-timer + `/start`
+  replies day 4): prices, watched markets, and paper-bet results. The
+  digest sender reads
   `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` from the environment and
   no-ops gracefully without them; `GET /digest/preview` shows the
-  digest text without any token. Price alerts are wired to live data
+  digest text without any token. The server sends the digest itself
+  every day at `DIGEST_TIME_WIB` (default 08:00 WIB) and answers
+  `/start` with a welcome message. Price alerts are wired to live data
   in-app (home header shows `!ALERT`, alerts screen marks `!TRIG` and
   shows the live price next to each target).
 - **VOICE (optional)** — ask about a market out loud on hardware; the app

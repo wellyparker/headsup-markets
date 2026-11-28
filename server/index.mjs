@@ -18,6 +18,12 @@
 //                            Telegram when TELEGRAM_BOT_TOKEN +
 //                            TELEGRAM_CHAT_ID are set; otherwise no-ops
 //                            (logs "digest skipped: no token").
+//   Daily digest (day 4): the server itself sends the digest every day
+//                            at DIGEST_TIME_WIB (default 08:00 WIB) —
+//                            refreshes the snapshot first, then sends.
+//   Telegram /start (day 4): the server long-polls getUpdates and
+//                            replies to /start with a welcome message
+//                            (the bot stayed silent on /start 24 + 27 Nov).
 //
 // Upstreams (both public, no API key):
 //   - CoinGecko /simple/price (BTC, ETH, SOL, XAUT + 24h change)
@@ -40,7 +46,13 @@ import { createServer } from 'node:http'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { formatDigest, sendDigest } from './digest.mjs'
+import { formatDigest, sendDigest, msUntilNextDigest, nextDigestAtMs } from './digest.mjs'
+import { sendTelegramMessage, startTelegramPolling } from './telegram.mjs'
+
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID
+// Daily digest wall-clock time in WIB ("HH:MM", default 08:00).
+const DIGEST_TIME_WIB = process.env.DIGEST_TIME_WIB ?? '08:00'
 
 const PORT = Number(process.env.PORT ?? 3000)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -323,6 +335,17 @@ const server = createServer(async (req, res) => {
       cacheAgeMs: cache ? Date.now() - cache.at : null,
       lastGoodAt: cache ? cache.payload.fetchedAt : null,
       betsRecorded: bets.length,
+      telegram: {
+        polling: telegram.state.running,
+        lastPollAt: telegram.state.lastPollAt,
+        lastError: telegram.state.lastError,
+        repliesSent: telegram.state.repliesSent,
+      },
+      digest: {
+        timeWib: digestTime.label,
+        nextDigestAt: nextDigestAt ? new Date(nextDigestAt).toISOString() : null,
+        lastSentAt: lastDigestSentAt,
+      },
     })
     return
   }
@@ -407,8 +430,91 @@ const server = createServer(async (req, res) => {
   sendJson(res, 404, { error: 'not found' })
 })
 
+// ---------------------------------------------------------------------------
+// Telegram /start replies + daily digest timer (day 4).
+// ---------------------------------------------------------------------------
+const WELCOME_TEXT =
+  '👓 HeadsUp Markets — your markets, on your glasses.\n\n' +
+  'I send a daily digest here every morning (08:00 WIB): prices for BTC, ETH, SOL and XAUT, the watched Polymarket odds, and your paper bets with mark-to-market P&L.\n\n' +
+  'Paper bets are virtual — place one from your Even Realities G2 glasses and it shows up in the next digest. No real money, ever.\n\n' +
+  'Send /start any time to see this again.'
+
+function parseDigestTime() {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(DIGEST_TIME_WIB.trim())
+  if (!m) {
+    console.error(`[headsup-backend] bad DIGEST_TIME_WIB "${DIGEST_TIME_WIB}", using 08:00`)
+    return { hour: 8, minute: 0, label: '08:00' }
+  }
+  const hour = Number(m[1])
+  const minute = Number(m[2])
+  if (hour > 23 || minute > 59) {
+    console.error(`[headsup-backend] bad DIGEST_TIME_WIB "${DIGEST_TIME_WIB}", using 08:00`)
+    return { hour: 8, minute: 0, label: '08:00' }
+  }
+  return { hour, minute, label: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}` }
+}
+
+const digestTime = parseDigestTime()
+let nextDigestAt = nextDigestAtMs(Date.now(), digestTime.hour, digestTime.minute)
+let lastDigestSentAt = null
+let digestTimer = null
+
+async function runDailyDigest() {
+  console.log('[headsup-digest] daily digest due — refreshing snapshot')
+  try {
+    if (!cache || Date.now() - cache.at >= CACHE_TTL_MS) {
+      const payload = await buildSnapshot()
+      cache = { payload, at: Date.now() }
+    }
+    const result = await sendDigest({ snapshot: cache.payload, bets })
+    if (result.sent) lastDigestSentAt = new Date().toISOString()
+    console.log('[headsup-digest] daily digest result:', JSON.stringify(result))
+  } catch (err) {
+    // No snapshot (upstreams down) or send failure: log, stay alive,
+    // next run is tomorrow — the manual POST /digest/send stays
+    // available as a retry path.
+    console.error('[headsup-digest] daily digest skipped:', err.message)
+  }
+  nextDigestAt = nextDigestAtMs(Date.now(), digestTime.hour, digestTime.minute)
+  digestTimer = setTimeout(runDailyDigest, nextDigestAt - Date.now())
+  if (digestTimer.unref) digestTimer.unref()
+}
+
+function startDailyDigest() {
+  const delay = msUntilNextDigest(Date.now(), digestTime.hour, digestTime.minute)
+  console.log(
+    `[headsup-backend] daily digest scheduled ${digestTime.label} WIB (next ${new Date(nextDigestAt).toISOString()})`,
+  )
+  digestTimer = setTimeout(runDailyDigest, delay)
+  if (digestTimer.unref) digestTimer.unref()
+}
+
+// /start polling: only when a bot token is configured. Without it the
+// server runs exactly as before (digest endpoints still work in
+// no-token mode).
+let telegram = { state: { running: false, lastPollAt: null, lastError: null, repliesSent: 0 } }
+if (TELEGRAM_BOT_TOKEN) {
+  const name = (firstName) => (firstName ? ` ${firstName}` : '')
+  telegram = startTelegramPolling(TELEGRAM_BOT_TOKEN, {
+    // Offset persists in the gitignored data dir so a restart never
+    // re-replies to an old /start.
+    offsetFile: join(DATA_DIR, 'telegram-offset.json'),
+    onStart: async (chatId, firstName) => {
+      await sendTelegramMessage(
+        TELEGRAM_BOT_TOKEN,
+        chatId,
+        `Hi${name(firstName)}! 👋\n\n${WELCOME_TEXT}`,
+      )
+      console.log(`[headsup-telegram] /start replied to chat ${chatId}`)
+    },
+  })
+} else {
+  console.log('[headsup-telegram] polling disabled: no TELEGRAM_BOT_TOKEN')
+}
+startDailyDigest()
+
 server.listen(PORT, HOST, () => {
-  console.log(`[headsup-backend] listening on http://${HOST}:${PORT} (GET /snapshot, GET /health, POST /paper-bet, GET /digest/preview, POST /digest/send)`)
+  console.log(`[headsup-backend] listening on http://${HOST}:${PORT} (GET /snapshot, GET /health, POST /paper-bet, GET /digest/preview, POST /digest/send; daily digest ${digestTime.label} WIB; /start replies ${telegram.state.running ? 'on' : 'off'})`)
   // Warm the cache at startup so the first glasses fetch is served in ms.
   buildSnapshot()
     .then((payload) => {

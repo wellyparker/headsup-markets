@@ -18,6 +18,35 @@ const TELEGRAM_TIMEOUT_MS = 60_000
 // Telegram caps a message at 4096 chars; stay comfortably under it.
 const MAX_DIGEST_CHARS = 3500
 
+import { sendTelegramMessage } from './telegram.mjs'
+
+// WIB is UTC+7 year-round (no DST).
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Next daily-digest run as an epoch ms (WIB wall-clock time).
+ * Pure function, exported for tests: nextDigestAtMs(Date.now(), 8, 0).
+ */
+export function nextDigestAtMs(nowMs, hourWib, minuteWib) {
+  const wib = new Date(nowMs + WIB_OFFSET_MS)
+  const target = Date.UTC(
+    wib.getUTCFullYear(),
+    wib.getUTCMonth(),
+    wib.getUTCDate(),
+    hourWib - 7,
+    minuteWib,
+    0,
+    0,
+  )
+  return target <= nowMs ? target + DAY_MS : target
+}
+
+/** Milliseconds from now until the next daily-digest run. */
+export function msUntilNextDigest(nowMs, hourWib, minuteWib) {
+  return nextDigestAtMs(nowMs, hourWib, minuteWib) - nowMs
+}
+
 function fmtUsd(n) {
   if (!Number.isFinite(n)) return '--'
   if (n >= 1000) return '$' + Math.round(n).toLocaleString('en-US')
@@ -155,17 +184,7 @@ export async function sendDigest({ snapshot, bets }) {
   }
   const text = formatDigest(snapshot, bets)
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
-      signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS),
-    })
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      console.error('[headsup-digest] telegram send failed:', res.status, body.slice(0, 200))
-      return { sent: false, reason: `telegram-${res.status}` }
-    }
+    await sendTelegramMessage(token, chatId, text, TELEGRAM_TIMEOUT_MS)
     console.log('[headsup-digest] digest sent')
     return { sent: true }
   } catch (err) {
